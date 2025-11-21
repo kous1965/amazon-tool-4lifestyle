@@ -27,7 +27,7 @@ def check_password():
         password = st.text_input("パスワード", type="password", key="login_pass")
         if st.button("ログイン"):
             ADMIN_USER = "smuggler"
-            ADMIN_PASS = "1793-2565-4  "
+            ADMIN_PASS = "1793-2565-4"
             if user_id == ADMIN_USER and password == ADMIN_PASS:
                 st.session_state.password_correct = True
                 st.rerun()
