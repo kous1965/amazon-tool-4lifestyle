@@ -8,7 +8,12 @@ import requests
 from datetime import datetime
 import pytz
 
-# ★修正ポイント: エラー部品のインポートを廃止し、汎用的な例外処理に切り替え
+# エラー回避のため、安全にインポート
+try:
+    from sp_api.base import SellingApiRequestThrottledException
+except ImportError:
+    SellingApiRequestThrottledException = Exception
+
 from sp_api.api import CatalogItems, Products, ProductFees
 from sp_api.base import Marketplaces
 
@@ -112,27 +117,24 @@ class AmazonSearcher:
         self.logs.append(f"[{ts}] {message}")
 
     def _call_api_safely(self, func, **kwargs):
-        """API制限(429)を回避する安全装置（汎用版）"""
-        retries = 5
+        retries = 3
         base_delay = 2.0 
-        
         for i in range(retries):
             try:
                 return func(**kwargs)
             except Exception as e:
-                # エラーメッセージの文字列で判定（インポートエラー回避のため）
                 error_str = str(e)
                 if "429" in error_str or "Throttled" in error_str or "QuotaExceeded" in error_str:
                     wait_time = base_delay * (i + 1) + random.uniform(0.5, 1.5)
-                    self.log(f"⚠️ API制限検知({i+1}/{retries}): {wait_time:.1f}秒待機")
+                    self.log(f"⚠️ 制限検知: {wait_time:.1f}秒待機")
                     time.sleep(wait_time)
                 else:
-                    self.log(f"API Error: {error_str}")
+                    self.log(f"❌ API Error: {error_str}") # エラー詳細を記録
                     return None
         return None
 
     def get_product_details_accurate(self, asin):
-        # 1. Catalog API
+        # 1. Catalog
         catalog = CatalogItems(credentials=self.credentials, marketplace=self.marketplace)
         res_cat = self._call_api_safely(
             catalog.get_catalog_item, asin=asin, marketplaceIds=[self.mp_id],
@@ -167,7 +169,6 @@ class AmazonSearcher:
                     info['size'] = f"{h}x{l}x{w}"
                     s_fee = calculate_shipping_fee(h, l, w)
                     info['shipping'] = f"¥{s_fee}" if s_fee != 'N/A' else '-'
-            
             if 'salesRanks' in data:
                 ranks = data['salesRanks'][0].get('ranks', [])
                 if ranks:
@@ -175,11 +176,9 @@ class AmazonSearcher:
                     info['rank'] = ranks[0].get('rank', 999999)
                     info['rank_disp'] = f"{info['rank']}位"
 
-        # 2. Products API
+        # 2. Products
         products_api = Products(credentials=self.credentials, marketplace=self.marketplace)
         time.sleep(1.5)
-        
-        # item_condition は小文字で指定
         res_offers = self._call_api_safely(
             products_api.get_item_offers, asin=asin, MarketplaceId=self.mp_id, item_condition='New'
         )
@@ -215,14 +214,13 @@ class AmazonSearcher:
                     
                     seller_id = target_offer.get('SellerId', '')
                     info['seller'] = self.resolver.get_name(seller_id)
-                    
                     price_found = True
 
         if not price_found and list_price > 0:
             info['price_disp'] = f"¥{list_price:,.0f} (参考)"
             info['seller'] = 'Ref Only'
 
-        # 3. Fees API
+        # 3. Fees
         if info['price'] > 0:
             time.sleep(0.5)
             fees_api = ProductFees(credentials=self.credentials, marketplace=self.marketplace)
@@ -249,7 +247,10 @@ class AmazonSearcher:
         while len(found_items) < scan_limit:
             params = {'keywords': [keywords], 'marketplaceIds': [self.mp_id], 'includedData': ['salesRanks'], 'pageSize': 20}
             if page_token: params['pageToken'] = page_token
+            
+            # 検索の実行
             res = self._call_api_safely(catalog.search_catalog_items, **params)
+            
             if res and res.payload:
                 items = res.payload.get('items', [])
                 if not items: break
@@ -262,7 +263,9 @@ class AmazonSearcher:
                     found_items.append({'asin': asin, 'rank': rank_val})
                 page_token = res.next_token
                 if not page_token: break
-            else: break
+            else:
+                # エラーでpayloadがない場合
+                break
             time.sleep(1)
         
         sorted_items = sorted(found_items, key=lambda x: x['rank'])
@@ -280,7 +283,7 @@ class AmazonSearcher:
 def main():
     if not check_password(): return
 
-    st.title("📦 Amazon SP-API 商品リサーチツール")
+    st.title("📦 Amazon SP-API 商品リサーチツール (デバッグ版)")
 
     with st.sidebar:
         st.header("⚙️ 設定")
@@ -349,6 +352,9 @@ def main():
 
         if not target_asins:
             st.error("商品が見つかりません")
+            # ★ログをここでも表示
+            with st.expander("デバッグログを表示 (エラー原因)"):
+                for log in searcher.logs: st.text(log)
             return
 
         st.success(f"{len(target_asins)}件のASINを特定。高精度モードで取得します...")
@@ -376,6 +382,7 @@ def main():
         status_text.success("完了！")
         progress_bar.progress(100)
 
+        # 成功時もログを表示できるようにする
         with st.expander("デバッグログを表示"):
             for log in searcher.logs:
                 st.text(log)
