@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 import time
 import random
-import json
-import os
-import requests
 from datetime import datetime
 import pytz
+import requests
+import json
+import os
 
 # エラー回避のため、安全にインポート
 try:
@@ -17,25 +17,48 @@ except ImportError:
 from sp_api.api import CatalogItems, Products, ProductFees
 from sp_api.base import Marketplaces
 
-# ページ設定
-st.set_page_config(page_title="Amazon SP-API Search Tool", layout="wide")
+# --- 1. ページ設定（タイトル修正） ---
+st.set_page_config(
+    page_title="Amazon SP-API 商品リサーチツール (ライフスタイル様専用)", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- 認証機能 ---
+# --- 2. UI非表示用CSS（メニュー、Github、Footer等を消す） ---
+hide_streamlit_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            .stDeployButton {display:none;}
+            [data-testid="stToolbar"] {visibility: hidden !important;}
+            [data-testid="stDecoration"] {display: none;}
+            [data-testid="stStatusWidget"] {visibility: hidden;}
+            </style>
+            """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
+# --- 3. 認証機能（ID/PASS修正） ---
 def check_password():
+    """簡易ログイン機能"""
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
+
     if st.session_state.password_correct:
         return True
-    
+
     st.markdown("## 🔐 ログイン")
+    
     col1, col2 = st.columns([1, 2])
     with col1:
         user_id = st.text_input("ユーザーID", key="login_user")
         password = st.text_input("パスワード", type="password", key="login_pass")
+        
         if st.button("ログイン"):
-            # 必要に応じて変更してください
+            # 指定されたIDとパスワード
             ADMIN_USER = "smuggler"
             ADMIN_PASS = "1793-2565-4"
+            
             if user_id == ADMIN_USER and password == ADMIN_PASS:
                 st.session_state.password_correct = True
                 st.rerun()
@@ -117,7 +140,7 @@ class AmazonSearcher:
         self.logs.append(f"[{ts}] {message}")
 
     def _call_api_safely(self, func, **kwargs):
-        retries = 3
+        retries = 5
         base_delay = 2.0 
         for i in range(retries):
             try:
@@ -126,10 +149,11 @@ class AmazonSearcher:
                 error_str = str(e)
                 if "429" in error_str or "Throttled" in error_str or "QuotaExceeded" in error_str:
                     wait_time = base_delay * (i + 1) + random.uniform(0.5, 1.5)
-                    self.log(f"⚠️ 制限検知: {wait_time:.1f}秒待機")
+                    # ログ記録は内部で行うが、画面には出さない
+                    # self.log(f"Wait: {wait_time:.1f}s") 
                     time.sleep(wait_time)
                 else:
-                    self.log(f"❌ API Error: {error_str}") # エラー詳細を記録
+                    self.log(f"API Error: {error_str}")
                     return None
         return None
 
@@ -247,10 +271,7 @@ class AmazonSearcher:
         while len(found_items) < scan_limit:
             params = {'keywords': [keywords], 'marketplaceIds': [self.mp_id], 'includedData': ['salesRanks'], 'pageSize': 20}
             if page_token: params['pageToken'] = page_token
-            
-            # 検索の実行
             res = self._call_api_safely(catalog.search_catalog_items, **params)
-            
             if res and res.payload:
                 items = res.payload.get('items', [])
                 if not items: break
@@ -263,9 +284,7 @@ class AmazonSearcher:
                     found_items.append({'asin': asin, 'rank': rank_val})
                 page_token = res.next_token
                 if not page_token: break
-            else:
-                # エラーでpayloadがない場合
-                break
+            else: break
             time.sleep(1)
         
         sorted_items = sorted(found_items, key=lambda x: x['rank'])
@@ -279,31 +298,30 @@ class AmazonSearcher:
             if items: return items[0].get('asin')
         return None
 
-# --- メインアプリ ---
+# --- Main App ---
 def main():
     if not check_password(): return
 
+    # ヘッダータイトル
     st.title("📦 Amazon SP-API 商品リサーチツール (ライフスタイル様専用 made by 岡田屋)")
 
-    with st.sidebar:
-        st.header("⚙️ 設定")
-        if "LWA_APP_ID" in st.secrets:
-            st.success("✅ 認証設定済み")
-            lwa_app_id = st.secrets["LWA_APP_ID"]
-            lwa_client_secret = st.secrets["LWA_CLIENT_SECRET"]
-            refresh_token = st.secrets["REFRESH_TOKEN"]
-            aws_access_key = st.secrets["AWS_ACCESS_KEY"]
-            aws_secret_key = st.secrets["AWS_SECRET_KEY"]
-            keepa_key = st.secrets.get("KEEPA_API_KEY", "")
-        else:
-            st.warning("Secrets未設定")
-            lwa_app_id = st.text_input("LWA App ID", type="password")
-            lwa_client_secret = st.text_input("LWA Client Secret", type="password")
-            refresh_token = st.text_input("Refresh Token", type="password")
-            aws_access_key = st.text_input("AWS Access Key", type="password")
-            aws_secret_key = st.text_input("AWS Secret Key", type="password")
-            keepa_key = st.text_input("Keepa API Key (Optional)", type="password")
+    # ★サイドバーのAPIキー設定欄を削除し、Secretsから読み込みだけ行う
+    if "LWA_APP_ID" not in st.secrets:
+        st.error("システムエラー: API認証情報が設定されていません。管理者に連絡してください。")
+        return
 
+    # Secretsから読み込み
+    credentials = {
+        'refresh_token': st.secrets["REFRESH_TOKEN"],
+        'lwa_app_id': st.secrets["LWA_APP_ID"],
+        'lwa_client_secret': st.secrets["LWA_CLIENT_SECRET"],
+        'aws_access_key': st.secrets["AWS_ACCESS_KEY"],
+        'aws_secret_key': st.secrets["AWS_SECRET_KEY"],
+        'role_arn': st.secrets.get("ROLE_ARN", "")
+    }
+    keepa_key = st.secrets.get("KEEPA_API_KEY", "")
+
+    # 検索条件の入力欄のみ表示
     st.markdown("### 🔍 検索条件")
     col_mode, col_limit = st.columns([2, 1])
     with col_mode:
@@ -318,17 +336,6 @@ def main():
         input_data = st.text_input(f"{search_mode} キーワード")
 
     if st.button("検索開始", type="primary"):
-        if not (lwa_app_id and lwa_client_secret and refresh_token):
-            st.error("API設定が必要です")
-            return
-
-        credentials = {
-            'refresh_token': refresh_token, 'lwa_app_id': lwa_app_id,
-            'lwa_client_secret': lwa_client_secret,
-            'aws_access_key': aws_access_key, 'aws_secret_key': aws_secret_key,
-            'role_arn': st.secrets.get("ROLE_ARN", "")
-        }
-
         searcher = AmazonSearcher(credentials, keepa_key=keepa_key)
         target_asins = []
         progress_bar = st.progress(0)
@@ -352,12 +359,11 @@ def main():
 
         if not target_asins:
             st.error("商品が見つかりません")
-            # ★ログをここでも表示
-            with st.expander("デバッグログを表示 (エラー原因)"):
+            with st.expander("エラー詳細"):
                 for log in searcher.logs: st.text(log)
             return
 
-        st.success(f"{len(target_asins)}件のASINを特定。高精度モードで取得します...")
+        st.success(f"{len(target_asins)}件のASINを特定。詳細情報を取得します...")
         
         results = []
         df_placeholder = st.empty()
@@ -382,10 +388,8 @@ def main():
         status_text.success("完了！")
         progress_bar.progress(100)
 
-        # 成功時もログを表示できるようにする
-        with st.expander("デバッグログを表示"):
-            for log in searcher.logs:
-                st.text(log)
+        # クライアント向けにはデバッグログは隠す（Expanderだけ残す）
+        # with st.expander("ログ"): ... も削除して見た目を完全にクリーンにする場合は削除可
 
         if results:
             df_final = pd.DataFrame(results)
